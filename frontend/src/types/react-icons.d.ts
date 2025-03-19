@@ -25,4 +25,10 @@ declare module 'react-icons/fi' {
   export const FiSettings: IconType;
   export const FiKey: IconType;
   export const FiLogOut: IconType;
+  export const FiChevronLeft: IconType;
+  export const FiChevronRight: IconType;
+  export const FiFile: IconType;
+  export const FiUpload: IconType;
+  export const FiCheck: IconType;
+  export const FiEdit2: IconType;
 }

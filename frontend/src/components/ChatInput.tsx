@@ -4,11 +4,24 @@ import { FiSend } from 'react-icons/fi';
 interface ChatInputProps {
   onSendMessage: (message: string) => void;
   disabled?: boolean;
+  value?: string;
+  onChange?: (e: React.ChangeEvent<HTMLTextAreaElement>) => void;
+  inputRef?: React.RefObject<HTMLTextAreaElement>;
 }
 
-const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, disabled = false }) => {
+const ChatInput: React.FC<ChatInputProps> = ({ 
+  onSendMessage, 
+  disabled = false,
+  value,
+  onChange,
+  inputRef
+}) => {
   const [message, setMessage] = useState('');
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const defaultTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const textareaRef = inputRef || defaultTextareaRef;
+  
+  // Use controlled or uncontrolled based on whether value/onChange are provided
+  const isControlled = value !== undefined && onChange !== undefined;
 
   // Adjust textarea height based on content
   useEffect(() => {
@@ -16,13 +29,25 @@ const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, disabled = false }
       textareaRef.current.style.height = 'auto';
       textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
     }
-  }, [message]);
+  }, [isControlled ? value : message, textareaRef]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (message.trim() && !disabled) {
-      onSendMessage(message);
-      setMessage('');
+    const contentToSend = isControlled ? value : message;
+    
+    if (contentToSend && contentToSend.trim() && !disabled) {
+      onSendMessage(contentToSend);
+      
+      // Only update internal state if uncontrolled
+      if (!isControlled) {
+        setMessage('');
+      } else if (onChange) {
+        // Call onChange with empty value if controlled
+        const event = {
+          target: { value: '' }
+        } as React.ChangeEvent<HTMLTextAreaElement>;
+        onChange(event);
+      }
     }
   };
 
@@ -30,6 +55,14 @@ const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, disabled = false }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSubmit(e);
+    }
+  };
+
+  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    if (isControlled && onChange) {
+      onChange(e);
+    } else {
+      setMessage(e.target.value);
     }
   };
 
@@ -41,8 +74,8 @@ const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, disabled = false }
             ref={textareaRef}
             className="w-full py-3 pl-4 pr-12 bg-transparent resize-none focus:outline-none"
             placeholder="Type a message..."
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
+            value={isControlled ? value : message}
+            onChange={handleChange}
             onKeyDown={handleKeyDown}
             rows={1}
             disabled={disabled}
@@ -50,7 +83,7 @@ const ChatInput: React.FC<ChatInputProps> = ({ onSendMessage, disabled = false }
           <button
             type="submit"
             className="absolute right-2 bottom-3 text-gray-400 hover:text-black dark:hover:text-white p-1 rounded-full"
-            disabled={!message.trim() || disabled}
+            disabled={!(isControlled ? value : message).trim() || disabled}
           >
             <FiSend size={20} />
           </button>

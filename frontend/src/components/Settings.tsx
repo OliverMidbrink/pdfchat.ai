@@ -1,17 +1,39 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { FiSettings, FiX, FiKey } from 'react-icons/fi';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../contexts/AuthContext';
 
-const Settings: React.FC = () => {
-  const [isOpen, setIsOpen] = useState(false);
+interface SettingsProps {
+  isOpen?: boolean;
+  onClose?: () => void;
+}
+
+const Settings: React.FC<SettingsProps> = ({ 
+  isOpen: externalIsOpen, 
+  onClose 
+}) => {
+  const [isOpen, setIsOpen] = useState(externalIsOpen || false);
   const [apiKey, setApiKey] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const { user, updateUserApiKey } = useAuth();
 
+  // Sync with external open state
+  useEffect(() => {
+    if (externalIsOpen !== undefined) {
+      setIsOpen(externalIsOpen);
+    }
+  }, [externalIsOpen]);
+
   const toggleSettings = () => {
-    setIsOpen(!isOpen);
+    const newIsOpen = !isOpen;
+    setIsOpen(newIsOpen);
+    
+    // If closing and there's an external control, call it
+    if (!newIsOpen && onClose) {
+      onClose();
+    }
+    
     setMessage(null);
     // If a user already has an API key, don't display it for security reasons
     setApiKey('');
@@ -41,14 +63,16 @@ const Settings: React.FC = () => {
 
   return (
     <>
-      {/* Settings button */}
-      <button
-        className="fixed bottom-4 right-4 p-3 bg-gray-100 dark:bg-gray-800 rounded-full shadow-md hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
-        onClick={toggleSettings}
-        aria-label="Settings"
-      >
-        <FiSettings size={20} />
-      </button>
+      {/* Settings button - only show if not externally controlled */}
+      {externalIsOpen === undefined && (
+        <button
+          className="fixed bottom-4 right-4 p-3 bg-gray-100 dark:bg-gray-800 rounded-full shadow-md hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+          onClick={toggleSettings}
+          aria-label="Settings"
+        >
+          <FiSettings size={20} />
+        </button>
+      )}
 
       {/* Settings panel */}
       <AnimatePresence>

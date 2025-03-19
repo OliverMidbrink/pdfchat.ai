@@ -15,6 +15,7 @@ class Conversation(Base):
     # Relationships
     user = relationship("User", backref="conversations")
     messages = relationship("Message", back_populates="conversation", cascade="all, delete-orphan")
+    documents = relationship("Document", back_populates="conversation")
 
 class Message(Base):
     __tablename__ = "messages"
