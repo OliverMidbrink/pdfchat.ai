@@ -52,7 +52,7 @@ const Register: React.FC = () => {
       console.log('Attempting registration for user:', username);
       
       // Add a small delay before registration to ensure UI state is updated
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise(resolve => setTimeout(resolve, 50));
       
       // Attempt to register - this will set the token and attempt to fetch the user profile
       await register(username, email || null, password);

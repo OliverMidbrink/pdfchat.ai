@@ -9,7 +9,7 @@ const Login: React.FC = () => {
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [loginStartTime, setLoginStartTime] = useState<number | null>(null);
-  const { login, isAuthenticated, isLoading: authLoading } = useAuth();
+  const { login, isAuthenticated, isLoading: authLoading, authError, forceLogout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -46,7 +46,7 @@ const Login: React.FC = () => {
       console.log('Attempting login for user:', username);
       
       // Add a small delay before login to ensure UI state is updated
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise(resolve => setTimeout(resolve, 50));
       
       // Attempt to login - this will set the token and attempt to fetch the user profile
       await login(username, password);
@@ -89,6 +89,14 @@ const Login: React.FC = () => {
   const loginTimeElapsed = loginStartTime ? Math.floor((Date.now() - loginStartTime) / 1000) : 0;
   const showTimeoutMessage = isLoading && loginTimeElapsed > 2;
 
+  // User guidance for clearing browser data
+  const handleClearBrowserData = () => {
+    // Force logout to clear all auth data
+    forceLogout();
+    // Show confirmation
+    setError('Session data cleared. Please try logging in again.');
+  };
+
   // Show loading while checking auth status
   if (authLoading) {
     return (
@@ -116,6 +124,23 @@ const Login: React.FC = () => {
       </div>
 
       <div className="mt-10 sm:mx-auto sm:w-full sm:max-w-sm">
+        {/* Show auth error with clear instructions if present */}
+        {authError && (
+          <div className="mb-6 p-4 bg-yellow-100 border border-yellow-400 text-yellow-800 rounded">
+            <p className="font-medium mb-2">Authentication Problem Detected</p>
+            <p className="mb-3">{authError}</p>
+            <p className="text-sm mb-3">
+              This typically happens when you have a previous login session but the database has been reset or recreated.
+            </p>
+            <button
+              className="bg-yellow-500 hover:bg-yellow-600 text-white py-2 px-4 rounded"
+              onClick={handleClearBrowserData}
+            >
+              Clear Session Data & Try Again
+            </button>
+          </div>
+        )}
+        
         {error && (
           <div className="mb-4 p-3 bg-red-100 border border-red-400 text-red-700 rounded">
             {error}
@@ -192,6 +217,17 @@ const Login: React.FC = () => {
           <Link to="/register" className="font-semibold leading-6 text-black dark:text-white hover:underline">
             Register here
           </Link>
+        </p>
+        
+        {/* Add troubleshooting link */}
+        <p className="mt-4 text-center text-xs text-gray-500">
+          Having trouble logging in?{' '}
+          <button 
+            onClick={handleClearBrowserData} 
+            className="text-gray-700 dark:text-gray-300 hover:underline"
+          >
+            Clear session data
+          </button>
         </p>
       </div>
     </motion.div>

@@ -26,6 +26,8 @@ interface AuthContextType {
   logout: () => void;
   updateUserApiKey: (apiKey: string) => Promise<void>;
   refreshToken: () => Promise<boolean>;
+  forceLogout: () => void;
+  authError: string | null;
 }
 
 // Create context
@@ -48,10 +50,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isCheckingAuth, setIsCheckingAuth] = useState(false); // Add state to track auth check
+  const [authError, setAuthError] = useState<string | null>(null); // Track authentication error messages
   const refreshTimerRef = useRef<number | null>(null);
   const fetchingUserRef = useRef<boolean>(false);
   const lastAuthCheckRef = useRef<number>(0); // Track last auth check time
   const initialLoadRef = useRef<boolean>(true); // Track initial load
+  const failedAuthAttemptsRef = useRef<number>(0); // Track failed authentication attempts
+  const MAX_AUTH_FAILURES = 3; // Max number of failures before showing error
   
   // Use our enhanced storage hook for token
   const [token, setToken, removeToken] = useStorage<string | null>(
@@ -88,14 +93,42 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     console.log('All auth data cleared');
   }, [removeToken]);
 
+  // Force logout function that aggressively clears all data and resets state
+  const forceLogout = useCallback(() => {
+    console.log('Force logout - clearing all auth data and resetting state');
+    clearAllAuthData();
+    setAuthError(null);
+    failedAuthAttemptsRef.current = 0;
+    // Redirect to login page if not already there
+    if (window.location.pathname !== '/login' && window.location.pathname !== '/register') {
+      window.location.href = '/login';
+    }
+  }, [clearAllAuthData]);
+
   // Function to refresh token - optimized with timeout
   const refreshToken = useCallback(async (): Promise<boolean> => {
     if (!token) return false;
+    
+    // Prevent refresh attempts if we've had too many failures
+    if (failedAuthAttemptsRef.current >= MAX_AUTH_FAILURES) {
+      console.log(`Not attempting token refresh - exceeded maximum failures (${MAX_AUTH_FAILURES})`);
+      return false;
+    }
+    
+    // Debounce refresh attempts
+    const now = Date.now();
+    if (now - lastAuthCheckRef.current < 2000) { // Use 2 seconds for refresh debounce
+      console.log('Debouncing token refresh - too soon since last attempt');
+      return false;
+    }
+    
+    lastAuthCheckRef.current = now;
     
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
       
+      console.log('Attempting to refresh token');
       const response = await axios.post(`${API_URL}/auth/refresh`, {}, {
         headers: { Authorization: `Bearer ${token}` },
         signal: controller.signal
@@ -108,12 +141,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // Update axios headers
       axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
       
+      // Reset failed attempts on success
+      failedAuthAttemptsRef.current = 0;
+      console.log('Token refresh successful');
+      
       return true;
     } catch (error) {
       console.error('Failed to refresh token:', error);
+      
+      // Increment failed attempts
+      failedAuthAttemptsRef.current++;
+      
+      // If we've exceeded the maximum failures, clear auth data
+      if (failedAuthAttemptsRef.current >= MAX_AUTH_FAILURES) {
+        console.log(`Maximum token refresh failures reached (${MAX_AUTH_FAILURES}), clearing auth state`);
+        clearAllAuthData();
+        setAuthError('Your session appears to be invalid. Please log in again.');
+      }
+      
       return false;
     }
-  }, [token, setToken]);
+  }, [token, setToken, clearAllAuthData, setAuthError]);
 
   // Setup token refresh timer
   const setupRefreshTimer = useCallback(() => {
@@ -183,9 +231,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         
         // If the error is due to an expired/invalid token and we haven't tried to refresh yet
         if (error.response?.status === 401 && !originalRequest._retry) {
+          // Check if we've exceeded the maximum failures
+          if (failedAuthAttemptsRef.current >= MAX_AUTH_FAILURES) {
+            console.log(`Not attempting token refresh - exceeded maximum failures (${MAX_AUTH_FAILURES})`);
+            clearAllAuthData();
+            return Promise.reject({
+              ...error,
+              authCleared: true,
+              response: { 
+                data: { detail: 'Authentication failed. Please log in again.' }
+              }
+            });
+          }
+          
+          // Debounce refresh attempts
+          const now = Date.now();
+          if (now - lastAuthCheckRef.current < 2000) { // Use 2 seconds for refresh debounce
+            console.log('Debouncing token refresh in interceptor - too soon since last attempt');
+            return Promise.reject(error);
+          }
+          
           originalRequest._retry = true;
+          lastAuthCheckRef.current = now;
           
           // Try to refresh the token
+          console.log('Attempting to refresh token from interceptor');
           const refreshSuccessful = await refreshToken();
           
           if (refreshSuccessful) {
@@ -289,6 +359,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // Prevent multiple concurrent auth checks
       if (isCheckingAuth) return;
       
+      // If we've exceeded the maximum auth failures, don't try again
+      if (failedAuthAttemptsRef.current >= MAX_AUTH_FAILURES) {
+        console.log(`Exceeded maximum auth failures (${MAX_AUTH_FAILURES}), not attempting again`);
+        setIsLoading(false);
+        
+        // Set error message if not already set
+        if (!authError) {
+          setAuthError('Authentication error: Your session appears invalid. Please try logging in again or clear your browser data for this site.');
+        }
+        return;
+      }
+      
       // Debounce auth checks to prevent rapid refreshes
       const now = Date.now();
       if (now - lastAuthCheckRef.current < DEBOUNCE_TIME) {
@@ -337,17 +419,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               if (userData) {
                 console.log('User profile fetched successfully', userData);
                 setUser(userData);
+                // Reset failed attempts counter on success
+                failedAuthAttemptsRef.current = 0;
+                setAuthError(null);
               } else {
                 console.log('No user data returned, logging out');
                 clearAllAuthData();
+                failedAuthAttemptsRef.current++;
               }
             } catch (profileError: any) {
               console.error('Profile fetch error:', profileError);
+              
+              // Increment failed attempts counter
+              failedAuthAttemptsRef.current++;
               
               // If we get a 401, it means the token is invalid/not in the DB
               if (profileError.response?.status === 401) {
                 console.log('Token invalid/not recognized by server, clearing auth state');
                 clearAllAuthData();
+                
+                // Check if we have exceeded max failures
+                if (failedAuthAttemptsRef.current >= MAX_AUTH_FAILURES) {
+                  console.log(`Maximum auth failures reached (${MAX_AUTH_FAILURES}), showing error message`);
+                  setAuthError(
+                    'Your saved login session appears to be invalid. This often happens when using a fresh installation with a previous login. ' +
+                    'Please try logging in again, or clear your browser data for this site.'
+                  );
+                }
               } else {
                 // For other errors, still clear auth to be safe
                 console.log('Error fetching profile, clearing auth state to be safe');
@@ -356,15 +454,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             }
           } else {
             console.log('Using existing user data, no need to fetch profile');
+            // Reset failed attempts counter when we have a user
+            failedAuthAttemptsRef.current = 0;
+            setAuthError(null);
           }
         } catch (error) {
           console.error('Auth check failed:', error);
           clearAllAuthData();
+          failedAuthAttemptsRef.current++;
         }
       } else {
         // No token, make sure user is null
         console.log('No token found, clearing user');
         setUser(null);
+        
+        // Reset failed attempts when there's no token
+        failedAuthAttemptsRef.current = 0;
+        setAuthError(null);
       }
       
       setIsLoading(false);
@@ -421,7 +527,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     // Run the clear stale token function instead of checkAuth directly
     clearStaleTokenOnStartup();
-  }, [token, clearAllAuthData, fetchUserProfile, user]);
+  }, [token, clearAllAuthData, fetchUserProfile, user, authError]);
 
   // Login function
   const login = async (username: string, password: string) => {
@@ -479,7 +585,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       console.log('Token set successfully, now fetching user profile');
       
       // Add a small delay to ensure token propagation to the backend
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise(resolve => setTimeout(resolve, 250));
       
       // Get user profile with retry logic - using a SEPARATE controller
       try {
@@ -619,7 +725,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       console.log('Token set successfully, now fetching user profile');
       
       // Add a small delay to ensure token propagation to the backend
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise(resolve => setTimeout(resolve, 250));
       
       // Get user profile with a SEPARATE controller
       try {
@@ -772,7 +878,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       register, 
       logout,
       updateUserApiKey,
-      refreshToken
+      refreshToken,
+      forceLogout,
+      authError
     }}>
       {children}
     </AuthContext.Provider>
