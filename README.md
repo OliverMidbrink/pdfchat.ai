@@ -9,6 +9,7 @@ A modern chat application with OpenAI integration, similar to ChatGPT, built wit
 - Save and manage conversation history
 - Personal API key management
 - Modern, responsive UI
+- Automatic conversation title generation
 
 ## Tech Stack
 
@@ -31,6 +32,13 @@ A modern chat application with OpenAI integration, similar to ChatGPT, built wit
 ```
 pdfchat.ai/
 ├── frontend/         # React frontend application
+│   ├── src/          # Source code
+│   │   ├── components/  # React components
+│   │   ├── contexts/    # Context providers (Auth, etc.)
+│   │   ├── hooks/       # Custom React hooks
+│   │   ├── pages/       # Page components
+│   │   ├── services/    # API services
+│   │   └── types/       # TypeScript type definitions
 ├── backend/          # FastAPI backend application
 │   ├── app/          # Application code
 │   │   ├── api/      # API routes
@@ -40,27 +48,30 @@ pdfchat.ai/
 │   │   ├── schemas/  # Pydantic schemas
 │   │   └── utils/    # Utility functions
 │   └── requirements.txt  # Python dependencies
+├── tests/            # Test files for both frontend and backend
+├── logs/             # Application logs directory
 ├── package.json      # Root package.json with scripts to run both services
 ├── manage.sh         # Management script for the application
-├── setup.sh          # Setup script to initialize the project
 ├── start.sh          # Enhanced startup script with environment checks
-├── diagnose.sh       # Diagnostic script to identify and fix common issues
+└── README_MANAGEMENT.md  # Detailed documentation for management scripts
 ```
 
 ## Getting Started
 
 ### Quick Start (Recommended)
 
-1. Run the setup script to initialize both frontend and backend:
+1. Clone the repository:
    ```
-   ./setup.sh
+   git clone https://github.com/OliverMidbrink/pdfchat.ai.git
+   cd pdfchat.ai
+   chmod +x *.sh  # Make all shell scripts executable
    ```
 
 2. Start both the frontend and backend servers:
    ```
-   npm start
-   # or
    ./manage.sh start
+   # or
+   npm start
    ```
 
 3. Open your browser to http://localhost:3000
@@ -70,54 +81,58 @@ pdfchat.ai/
 For faster development with automatic reloading:
 
 ```
-npm run dev
-# or
 ./manage.sh dev
+# or
+npm run dev
 ```
 
 This enables:
 - Hot Module Replacement for React components (frontend)
 - Automatic server restart on code changes (backend)
-- Live log viewing with `./manage.sh logs`
+- Live log viewing
 
-See `README_MANAGEMENT.md` for more details on the management system.
+## Management Scripts
 
-### Git Setup
-
-The repository is configured with:
-- Comprehensive `.gitignore` for Python, Node.js, and project-specific files
-- Pre-commit hook to check for common issues before committing
-- Shell script permissions automatically preserved
-
-When cloning the repository for the first time:
+The application includes a comprehensive management system through the `manage.sh` script:
 
 ```
-git clone <repository-url>
-cd pdfchat.ai
-chmod +x *.sh  # Make all shell scripts executable
+./manage.sh <command>
 ```
+
+Available commands:
+
+- `start` - Start both the frontend and backend servers
+- `stop` - Stop all application services
+- `restart` - Restart all application services
+- `status` - Show the current status of all services
+- `logs` - View real-time application logs
+- `healthcheck` - Perform a comprehensive health check of the application
+- `fix` - Attempt to fix common issues automatically
+- `view-frontend` - View only frontend logs
+- `view-backend` - View only backend logs
+- `clean-logs` - Clear old log files
+
+For more detailed information about the management system, see `README_MANAGEMENT.md`.
 
 ### Troubleshooting
 
-If you encounter any issues, run the diagnostic script:
+If you encounter any issues, check the application status and logs:
+
 ```
-./diagnose.sh
+./manage.sh status
+./manage.sh logs
 ```
 
-This will identify common problems and attempt to fix them automatically. The script will:
-- Check for missing Python dependencies
-- Verify the .env file is properly configured
-- Ensure npm packages are installed
-- Provide a detailed summary of the environment status
-
-Alternatively, use the management script for comprehensive diagnostics:
+For a comprehensive health check:
 ```
 ./manage.sh healthcheck
 ```
 
-### Manual Setup
+## Manual Setup
 
-#### Backend Setup
+If you prefer to set up components manually:
+
+### Backend Setup
 
 1. Navigate to the backend directory:
    ```
@@ -145,7 +160,7 @@ Alternatively, use the management script for comprehensive diagnostics:
    python run.py
    ```
 
-#### Frontend Setup
+### Frontend Setup
 
 1. Navigate to the frontend directory:
    ```
@@ -164,21 +179,18 @@ Alternatively, use the management script for comprehensive diagnostics:
 
 4. Open your browser to http://localhost:3000
 
-## Available Scripts
+## NPM Scripts
 
-- `npm start` - Start both the frontend and backend servers (macOS/Linux)
+The following scripts are available through npm:
+
+- `npm start` - Start both the frontend and backend servers
 - `npm run dev` - Start application in development mode with hot reloading
-- `npm run start:win` - Start both servers (Windows)
-- `npm run start:frontend` - Start only the frontend server
-- `npm run start:backend` - Start only the backend server (macOS/Linux)
-- `npm run start:backend:win` - Start only the backend server (Windows)
-- `npm run install:frontend` - Install frontend dependencies
-- `npm run install:backend` - Install backend dependencies (macOS/Linux)
-- `npm run install:backend:win` - Install backend dependencies (Windows)
-- `./manage.sh` - Comprehensive management script with multiple commands
-- `./setup.sh` - Initialize the entire project
-- `./start.sh` - Start both servers with environment validation
-- `./diagnose.sh` - Diagnose and fix common issues
+- `npm run stop` - Stop all application services
+- `npm run restart` - Restart all application services
+- `npm run status` - Show the current status of all services
+- `npm run logs` - View real-time application logs
+- `npm run healthcheck` - Perform a comprehensive health check
+- `npm run fix` - Fix common issues automatically
 
 ## Usage
 
@@ -187,6 +199,10 @@ Alternatively, use the management script for comprehensive diagnostics:
 3. Add your OpenAI API key in the settings (bottom right)
 4. Start a new conversation
 5. Enjoy chatting with the AI!
+
+### OpenAI API Key
+
+This application requires users to provide their own OpenAI API key for full functionality. The key is stored securely in the database and used for generating responses and conversation titles.
 
 ## License
 

@@ -70,5 +70,5 @@ tests/frontend/test_auth_components.js
 frontend/build/
 backend/build/
 
-# Keep all shell scripts executable
-*.sh 
+# Don't ignore shell scripts
+!*.sh 
