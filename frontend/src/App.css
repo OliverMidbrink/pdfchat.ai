@@ -1,0 +1,26 @@
+/* App.css */
+/* Most styling is handled by Tailwind CSS */
+
+/* Additional global styles */
+.min-h-screen {
+  min-height: 100vh;
+}
+
+/* For webkit browsers - nice scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #888;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
