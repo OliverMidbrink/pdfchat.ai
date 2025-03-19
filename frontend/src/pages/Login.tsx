@@ -48,13 +48,13 @@ const Login: React.FC = () => {
       // Add a small delay before login to ensure UI state is updated
       await new Promise(resolve => setTimeout(resolve, 100));
       
+      // Attempt to login - this will set the token and attempt to fetch the user profile
       await login(username, password);
       console.log('Login successful, navigating to:', redirectPath);
       
-      // Add a small delay before navigating to avoid race conditions
-      setTimeout(() => {
-        navigate(redirectPath, { replace: true });
-      }, 300);
+      // Don't navigate here - use the useEffect hook that watches isAuthenticated instead
+      // This ensures navigation happens only after the auth state has been fully updated
+      // The useEffect above will handle navigation once isAuthenticated changes to true
     } catch (err: any) {
       console.error('Login error:', err);
       let errorMessage = 'Login failed. Please check your credentials.';
@@ -64,6 +64,18 @@ const Login: React.FC = () => {
         console.error('Server error response:', err.response.data);
       } else if (err.message && typeof err.message === 'string') {
         errorMessage = err.message;
+      }
+      
+      // For network errors, provide a more specific error message
+      if (err.code === 'ERR_NETWORK') {
+        errorMessage = 'Network error. Please check your connection and try again.';
+      }
+      
+      // For timeout errors during profile fetch, still allow login to proceed
+      if (err.profileFetchFailed && err.tokenSet) {
+        console.log('Profile fetch failed but token was set - considering login successful');
+        // The useEffect watching isAuthenticated will handle navigation
+        return;
       }
       
       setError(errorMessage);

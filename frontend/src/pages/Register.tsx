@@ -10,11 +10,24 @@ const Register: React.FC = () => {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const { register } = useAuth();
+  const { register, isAuthenticated, isLoading: authLoading } = useAuth();
   const navigate = useNavigate();
+
+  // Redirect if already authenticated
+  React.useEffect(() => {
+    if (isAuthenticated && !authLoading) {
+      console.log('Already authenticated, redirecting to home page');
+      navigate('/', { replace: true });
+    }
+  }, [isAuthenticated, authLoading, navigate]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    
+    // Prevent repeated submissions
+    if (isLoading) {
+      return;
+    }
     
     // Basic validation
     if (!username.trim()) {
@@ -36,13 +49,38 @@ const Register: React.FC = () => {
     setIsLoading(true);
     
     try {
+      console.log('Attempting registration for user:', username);
+      
+      // Add a small delay before registration to ensure UI state is updated
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      // Attempt to register - this will set the token and attempt to fetch the user profile
       await register(username, email || null, password);
-      navigate('/');
+      console.log('Registration successful');
+      
+      // Don't navigate here - use the useEffect hook that watches isAuthenticated instead
+      // This ensures navigation happens only after the auth state has been fully updated
     } catch (err: any) {
+      console.error('Registration error:', err);
       let errorMessage = 'Registration failed. Please try again.';
       
       if (err.response && err.response.data && err.response.data.detail) {
         errorMessage = err.response.data.detail;
+        console.error('Server error response:', err.response.data);
+      } else if (err.message && typeof err.message === 'string') {
+        errorMessage = err.message;
+      }
+      
+      // For network errors, provide a more specific error message
+      if (err.code === 'ERR_NETWORK') {
+        errorMessage = 'Network error. Please check your connection and try again.';
+      }
+      
+      // For timeout errors during profile fetch, still allow registration to proceed
+      if (err.profileFetchFailed && err.tokenSet) {
+        console.log('Profile fetch failed but token was set - considering registration successful');
+        // The useEffect watching isAuthenticated will handle navigation
+        return;
       }
       
       setError(errorMessage);

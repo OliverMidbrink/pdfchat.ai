@@ -1,34 +1,28 @@
 #!/bin/bash
 
+# Exit on error
+set -e
+
 echo "🚀 Starting pdfchat.ai application..."
 
-# Run backend in background
-echo "🚀 Starting backend server..."
-./start_backend.sh &
-BACKEND_PID=$!
-echo "✅ Backend started with PID $BACKEND_PID"
+# Root directory
+ROOT_DIR=$(pwd)
+BACKEND_DIR="$ROOT_DIR/backend"
 
-# Wait a bit for backend to initialize
-sleep 2
+# First check if backend dependencies are installed
+cd "$BACKEND_DIR"
+source venv/bin/activate
 
-# Run frontend in background
-echo "🚀 Starting frontend..."
-./start_frontend.sh &
-FRONTEND_PID=$!
-echo "✅ Frontend started with PID $FRONTEND_PID"
+# Quick dependency check
+echo "🔍 Checking backend dependencies..."
+if ! python -c "import sqlalchemy" &>/dev/null; then
+    echo "❌ SQLAlchemy not found. Please run setup.sh first."
+    exit 1
+fi
 
-echo ""
-echo "✨ Application is now running!"
-echo "- Backend: http://localhost:8000"
-echo "- Frontend: http://localhost:3000"
-echo ""
-echo "Press Ctrl+C to stop both servers."
+# Return to root directory
+cd "$ROOT_DIR"
 
-# Handle termination
-trap "echo '🛑 Stopping servers...'; kill $BACKEND_PID $FRONTEND_PID 2>/dev/null; exit" INT TERM
-
-# Wait for any process to exit
-wait $BACKEND_PID $FRONTEND_PID
-
-# Exit with status of process that exited first
-exit $?
+# Start the application
+echo "🚀 Starting frontend and backend servers..."
+npm start

@@ -21,8 +21,8 @@ interface AuthContextType {
   user: User | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  login: (username: string, password: string) => Promise<void>;
-  register: (username: string, email: string | null, password: string) => Promise<void>;
+  login: (username: string, password: string) => Promise<{ success: boolean; partialSuccess: boolean; message: string; } | void>;
+  register: (username: string, email: string | null, password: string) => Promise<{ success: boolean; partialSuccess: boolean; message: string; } | void>;
   logout: () => void;
   updateUserApiKey: (apiKey: string) => Promise<void>;
   refreshToken: () => Promise<boolean>;
@@ -51,6 +51,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const refreshTimerRef = useRef<number | null>(null);
   const fetchingUserRef = useRef<boolean>(false);
   const lastAuthCheckRef = useRef<number>(0); // Track last auth check time
+  const initialLoadRef = useRef<boolean>(true); // Track initial load
   
   // Use our enhanced storage hook for token
   const [token, setToken, removeToken] = useStorage<string | null>(
@@ -60,6 +61,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     true,  // Use cookies for better persistence
     TOKEN_EXPIRY_DAYS
   );
+
+  // Utility function to clear all auth data
+  const clearAllAuthData = useCallback(() => {
+    // Clear the auth token using our hook
+    removeToken();
+    
+    // Clear the user state
+    setUser(null);
+    
+    // Clear Authorization header
+    delete axios.defaults.headers.common['Authorization'];
+    
+    // Clear all cookies (belt and suspenders approach)
+    document.cookie.split(";").forEach(function(c) {
+      document.cookie = c.replace(/^ +/, "").replace(/=.*/, "=;expires=" + new Date().toUTCString() + ";path=/");
+    });
+    
+    // Also try to clear localStorage directly
+    try {
+      localStorage.removeItem('auth_token');
+    } catch (e) {
+      console.error('Error clearing local storage:', e);
+    }
+    
+    console.log('All auth data cleared');
+  }, [removeToken]);
 
   // Function to refresh token - optimized with timeout
   const refreshToken = useCallback(async (): Promise<boolean> => {
@@ -167,8 +194,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             // Retry the original request
             return axios(originalRequest);
           } else {
-            // If refresh failed, log the user out
-            logout();
+            // If refresh failed, use our dedicated function to clean up properly
+            console.log('Token refresh failed - clearing authentication state');
+            clearAllAuthData();
+            
+            // Return a properly formed error that includes information about auth being cleared
+            return Promise.reject({
+              ...error,
+              authCleared: true, // Flag to indicate auth was cleared
+              response: { 
+                data: { detail: 'Authentication failed. Please log in again.' }
+              }
+            });
           }
         }
         
@@ -186,44 +223,56 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         window.clearTimeout(refreshTimerRef.current);
       }
     };
-  }, [token, refreshToken]);
+  }, [token, refreshToken, clearAllAuthData]);
 
   // Function to set the auth token and update axios headers
   const setAuthToken = useCallback((newToken: string | null) => {
-    if (newToken) {
-      // Save token to storage and state
-      setToken(newToken);
-      // Set default auth header for all future requests
-      axios.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
-    } else {
-      // Remove token
-      removeToken();
-      delete axios.defaults.headers.common['Authorization'];
-    }
+    return new Promise<void>((resolve) => {
+      if (newToken) {
+        // Save token to storage and state
+        setToken(newToken);
+        // Set default auth header for all future requests
+        axios.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
+        
+        // Small delay to ensure the token is properly saved before continuing
+        setTimeout(() => {
+          resolve();
+        }, 300); // 300ms delay should be enough for state updates and storage operations
+      } else {
+        // Remove token
+        removeToken();
+        delete axios.defaults.headers.common['Authorization'];
+        resolve(); // Resolve immediately for token removal
+      }
+    });
   }, [setToken, removeToken]);
 
-  // Fetch user profile data with timeout
-  const fetchUserProfile = useCallback(async () => {
+  // Updated fetchUserProfile to accept an optional signal parameter
+  const fetchUserProfile = useCallback(async (signal?: AbortSignal) => {
     if (!token || fetchingUserRef.current) return null;
     
     fetchingUserRef.current = true;
     
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      // Use provided signal or create a new controller
+      const controller = signal ? null : new AbortController();
+      const timeoutId = controller ? setTimeout(() => controller.abort(), 10000) : null;
       
       const response = await axios.get(`${API_URL}/users/me`, {
         headers: { Authorization: `Bearer ${token}` }, 
-        signal: controller.signal 
+        signal: signal || (controller ? controller.signal : undefined)
       });
       
-      clearTimeout(timeoutId);
+      if (timeoutId) clearTimeout(timeoutId);
       fetchingUserRef.current = false;
       return response.data;
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to fetch user profile:', error);
       fetchingUserRef.current = false;
-      return null;
+      
+      // Properly propagate the error instead of returning null
+      // This allows the caller to distinguish between different error types
+      throw error;
     }
   }, [token]);
 
@@ -255,23 +304,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       
       if (token) {
         try {
-          // Validate token locally
+          // Validate token locally first
           try {
             const decodedToken = jwt_decode<JwtPayload>(token);
             const currentTime = Date.now() / 1000;
             
             if (decodedToken.exp < currentTime) {
               console.log('Token expired, removing');
-              setAuthToken(null);
-              setUser(null);
+              clearAllAuthData();
               setIsLoading(false);
               setIsCheckingAuth(false);
               return;
             }
           } catch (e) {
             console.error('Invalid token format', e);
-            setAuthToken(null);
-            setUser(null);
+            clearAllAuthData();
             setIsLoading(false);
             setIsCheckingAuth(false);
             return;
@@ -283,23 +330,36 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           // Only fetch profile if we don't already have user data
           if (!user) {
             console.log('Fetching user profile');
-            const userData = await fetchUserProfile();
+            
+            try {
+              const userData = await fetchUserProfile();
+                
+              if (userData) {
+                console.log('User profile fetched successfully', userData);
+                setUser(userData);
+              } else {
+                console.log('No user data returned, logging out');
+                clearAllAuthData();
+              }
+            } catch (profileError: any) {
+              console.error('Profile fetch error:', profileError);
               
-            if (userData) {
-              console.log('User profile fetched successfully', userData);
-              setUser(userData);
-            } else {
-              console.log('Failed to fetch user profile, logging out');
-              setAuthToken(null);
-              setUser(null);
+              // If we get a 401, it means the token is invalid/not in the DB
+              if (profileError.response?.status === 401) {
+                console.log('Token invalid/not recognized by server, clearing auth state');
+                clearAllAuthData();
+              } else {
+                // For other errors, still clear auth to be safe
+                console.log('Error fetching profile, clearing auth state to be safe');
+                clearAllAuthData();
+              }
             }
           } else {
             console.log('Using existing user data, no need to fetch profile');
           }
         } catch (error) {
           console.error('Auth check failed:', error);
-          setAuthToken(null);
-          setUser(null);
+          clearAllAuthData();
         }
       } else {
         // No token, make sure user is null
@@ -311,17 +371,67 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setIsCheckingAuth(false);
     };
 
-    checkAuth();
-  }, [token, setAuthToken, fetchUserProfile, user]);
+    // Clear any stale tokens on startup if they appear invalid
+    const clearStaleTokenOnStartup = async () => {
+      // Only run this once when the component mounts
+      if (initialLoadRef.current) {
+        initialLoadRef.current = false;
+        console.log('Initial load - checking for stale tokens');
+        
+        // Force-clear all auth data on first load to ensure clean startup
+        if (window.location.pathname !== '/login' && window.location.pathname !== '/register') {
+          const storageItem = localStorage.getItem('auth_token');
+          if (storageItem) {
+            try {
+              // Try to parse and validate the token
+              const storedToken = JSON.parse(storageItem);
+              if (typeof storedToken === 'string') {
+                try {
+                  // Validate token format and expiry
+                  const decodedToken = jwt_decode<JwtPayload>(storedToken);
+                  const currentTime = Date.now() / 1000;
+                  
+                  if (decodedToken.exp < currentTime) {
+                    // Expired token, clear it immediately
+                    console.log('Expired token found on startup, clearing');
+                    clearAllAuthData();
+                  }
+                } catch (e) {
+                  // Invalid token format, clear it immediately
+                  console.log('Invalid token format found on startup, clearing');
+                  clearAllAuthData();
+                }
+              } else {
+                // Not a string token, clear it
+                console.log('Invalid token type found on startup, clearing');
+                clearAllAuthData();
+              }
+            } catch (e) {
+              // JSON parse error, clear the invalid token
+              console.log('Corrupted token found on startup, clearing');
+              clearAllAuthData();
+            }
+          }
+        }
+      }
+      
+      // Proceed with normal auth check
+      checkAuth();
+    };
+
+    // Run the clear stale token function instead of checkAuth directly
+    clearStaleTokenOnStartup();
+  }, [token, clearAllAuthData, fetchUserProfile, user]);
 
   // Login function
   const login = async (username: string, password: string) => {
     setIsLoading(true);
+    let tokenSet = false;
     
     try {
       // Increase timeout for login requests, since these might take longer
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 20000); // 20 second timeout for login
+      const loginController = new AbortController();
+      const loginTimeoutId = setTimeout(() => loginController.abort(), 20000); // 20 second timeout for login
       
       console.log('Sending login request');
       
@@ -336,10 +446,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           console.log(`Login attempt ${attempts}/${maxAttempts}`);
           
           loginResponse = await axios.post(`${API_URL}/auth/login`, { username, password }, {
-            signal: controller.signal,
+            signal: loginController.signal,
             timeout: 15000 // Explicitly set longer timeout for login requests
           });
         } catch (err: any) {
+          console.error(`Login attempt ${attempts} error:`, err);
+          
           // If it's the last attempt, throw the error
           if (attempts >= maxAttempts) {
             throw err;
@@ -355,31 +467,122 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         throw new Error('All login attempts failed');
       }
       
-      clearTimeout(timeoutId);
+      // Clear the login request timeout as it succeeded
+      clearTimeout(loginTimeoutId);
+      
       const { access_token } = loginResponse.data;
       console.log('Login successful, received token');
       
-      // Save token
-      setAuthToken(access_token);
+      // Save token and wait for it to be properly set
+      await setAuthToken(access_token);
+      tokenSet = true; // Mark that we've successfully set the token
+      console.log('Token set successfully, now fetching user profile');
       
-      // Get user profile
-      console.log('Fetching user profile after login');
-      const userData = await fetchUserProfile();
-      if (userData) {
-        console.log('User profile fetched successfully');
-        setUser(userData);
-      } else {
-        console.error('Failed to fetch user profile after login');
-        throw new Error('Failed to fetch user profile after login');
+      // Add a small delay to ensure token propagation to the backend
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // Get user profile with retry logic - using a SEPARATE controller
+      try {
+        console.log('Fetching user profile after login');
+        const profileController = new AbortController();
+        const profileTimeoutId = setTimeout(() => profileController.abort(), 10000);
+        
+        try {
+          const userData = await fetchUserProfile(profileController.signal);
+          // Clear the profile timeout as it succeeded
+          clearTimeout(profileTimeoutId);
+          
+          if (userData) {
+            console.log('User profile fetched successfully');
+            setUser(userData);
+          } else {
+            console.error('No user data returned after login');
+            throw new Error('Failed to fetch user profile after login');
+          }
+        } catch (profileError) {
+          // Clear the profile timeout in case of error
+          clearTimeout(profileTimeoutId);
+          console.error('Error fetching profile after login:', profileError);
+          
+          // Try one more time after a delay with a new controller
+          console.log('Retrying profile fetch after a delay...');
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          
+          const retryController = new AbortController();
+          const retryTimeoutId = setTimeout(() => retryController.abort(), 10000);
+          
+          try {
+            const retryData = await fetchUserProfile(retryController.signal);
+            clearTimeout(retryTimeoutId);
+            
+            if (retryData) {
+              console.log('User profile fetched successfully on retry');
+              setUser(retryData);
+            } else {
+              throw new Error('Failed to fetch user profile after login, even with retry');
+            }
+          } catch (retryError) {
+            clearTimeout(retryTimeoutId);
+            throw retryError;
+          }
+        }
+      } catch (profileError: any) {
+        console.error('Profile fetch failed after login:', profileError);
+        
+        // Special handling for profile fetch errors
+        // For timeouts or network errors, consider login partially successful
+        if (profileError.code === 'ERR_CANCELED' || profileError.code === 'ECONNABORTED' || 
+            profileError.code === 'ERR_NETWORK' || !profileError.response) {
+          console.warn('Profile fetch timed out or network error, but login successful - continuing with token only');
+          
+          // Set minimal user data to trigger isAuthenticated
+          setUser({ 
+            id: 0, 
+            username: username, 
+            email: null, 
+            is_active: true, 
+            has_openai_api_key: false 
+          });
+          
+          // Don't throw error, but return custom object
+          return {
+            success: true,
+            partialSuccess: true,
+            message: 'Login successful, but profile could not be retrieved. Some features may be limited.'
+          };
+        } else if (profileError.response?.status === 401) {
+          // Clear auth if we get a 401 trying to fetch the profile
+          clearAllAuthData();
+          const error: any = new Error('Authentication failed. Please try logging in again.');
+          error.profileFetchFailed = true;
+          error.tokenSet = tokenSet;
+          throw error;
+        } else {
+          const error: any = new Error('Failed to load user profile. Some features may be limited.');
+          error.profileFetchFailed = true;
+          error.tokenSet = tokenSet;
+          error.originalError = profileError;
+          throw error;
+        }
       }
+      
+      return { 
+        success: true, 
+        partialSuccess: false,
+        message: 'Login successful'
+      };
     } catch (error: any) {
       console.error('Login failed:', error);
       
       // Check for timeout or network errors
       if (error.code === 'ERR_CANCELED' || error.code === 'ECONNABORTED' || !error.response) {
-        throw new Error('Login request timed out. Please try again.');
+        const timeoutError: any = new Error('Login request timed out. Please try again.');
+        timeoutError.tokenSet = tokenSet;
+        throw timeoutError;
       }
       
+      // Add token status to the error
+      error.tokenSet = tokenSet;
       throw error;
     } finally {
       setIsLoading(false);
@@ -389,34 +592,137 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Register function
   const register = async (username: string, email: string | null, password: string) => {
     setIsLoading(true);
+    let tokenSet = false;
     
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      const registerController = new AbortController();
+      const registerTimeoutId = setTimeout(() => registerController.abort(), 10000);
       
+      console.log('Sending registration request');
       const response = await axios.post(`${API_URL}/auth/register`, { 
         username, 
         email, 
         password 
       }, {
-        signal: controller.signal
+        signal: registerController.signal
       });
       
-      clearTimeout(timeoutId);
+      // Clear the registration request timeout as it succeeded
+      clearTimeout(registerTimeoutId);
+      
       const { access_token } = response.data;
       
-      // Save token
-      setAuthToken(access_token);
+      // Save token and wait for it to be properly set
+      console.log('Registration successful, setting token');
+      await setAuthToken(access_token);
+      tokenSet = true; // Mark that we've successfully set the token
+      console.log('Token set successfully, now fetching user profile');
       
-      // Get user profile
-      const userData = await fetchUserProfile();
-      if (userData) {
-        setUser(userData);
-      } else {
-        throw new Error('Failed to fetch user profile after registration');
+      // Add a small delay to ensure token propagation to the backend
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // Get user profile with a SEPARATE controller
+      try {
+        console.log('Fetching user profile after registration');
+        const profileController = new AbortController();
+        const profileTimeoutId = setTimeout(() => profileController.abort(), 10000);
+        
+        try {
+          const userData = await fetchUserProfile(profileController.signal);
+          // Clear the profile timeout as it succeeded
+          clearTimeout(profileTimeoutId);
+          
+          if (userData) {
+            console.log('User profile fetched successfully after registration');
+            setUser(userData);
+          } else {
+            console.error('No user data returned after registration');
+            throw new Error('Failed to fetch user profile after registration');
+          }
+        } catch (profileError) {
+          // Clear the profile timeout in case of error
+          clearTimeout(profileTimeoutId);
+          console.error('Error fetching profile after registration:', profileError);
+          
+          // Try one more time after a delay with a new controller
+          console.log('Retrying profile fetch after a delay...');
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          
+          const retryController = new AbortController();
+          const retryTimeoutId = setTimeout(() => retryController.abort(), 10000);
+          
+          try {
+            const retryData = await fetchUserProfile(retryController.signal);
+            clearTimeout(retryTimeoutId);
+            
+            if (retryData) {
+              console.log('User profile fetched successfully on retry');
+              setUser(retryData);
+            } else {
+              throw new Error('Failed to fetch user profile after registration, even with retry');
+            }
+          } catch (retryError) {
+            clearTimeout(retryTimeoutId);
+            throw retryError;
+          }
+        }
+      } catch (profileError: any) {
+        console.error('Profile fetch failed after registration:', profileError);
+        
+        // Special handling for profile fetch errors
+        // For timeouts or network errors, consider registration partially successful
+        if (profileError.code === 'ERR_CANCELED' || profileError.code === 'ECONNABORTED' || 
+            profileError.code === 'ERR_NETWORK' || !profileError.response) {
+          console.warn('Profile fetch timed out or network error, but registration successful - continuing with token only');
+          
+          // Set minimal user data to trigger isAuthenticated
+          setUser({ 
+            id: 0, 
+            username: username, 
+            email: email, 
+            is_active: true, 
+            has_openai_api_key: false 
+          });
+          
+          // Don't throw error, but return custom object
+          return {
+            success: true,
+            partialSuccess: true,
+            message: 'Registration successful, but profile could not be retrieved. Some features may be limited.'
+          };
+        } else if (profileError.response?.status === 401) {
+          // Clear auth if we get a 401 trying to fetch the profile
+          clearAllAuthData();
+          const error: any = new Error('Authentication failed after registration. Please try logging in again.');
+          error.profileFetchFailed = true;
+          error.tokenSet = tokenSet;
+          throw error;
+        } else {
+          const error: any = new Error('Failed to load user profile after registration. Some features may be limited.');
+          error.profileFetchFailed = true;
+          error.tokenSet = tokenSet;
+          error.originalError = profileError;
+          throw error;
+        }
       }
-    } catch (error) {
+      
+      return { 
+        success: true, 
+        partialSuccess: false,
+        message: 'Registration successful'
+      };
+    } catch (error: any) {
       console.error('Registration failed:', error);
+      
+      // Check for timeout or network errors
+      if (error.code === 'ERR_CANCELED' || error.code === 'ECONNABORTED' || !error.response) {
+        const timeoutError: any = new Error('Registration request timed out. Please try again.');
+        timeoutError.tokenSet = tokenSet;
+        throw timeoutError;
+      }
+      
+      // Add token status to the error
+      error.tokenSet = tokenSet;
       throw error;
     } finally {
       setIsLoading(false);
@@ -432,9 +738,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
     
     console.log('Logging out user');
-    setAuthToken(null);
-    setUser(null);
-  }, [setAuthToken]);
+    // Use our utility function to clear all auth data
+    clearAllAuthData();
+  }, [clearAllAuthData]);
 
   // Update API key
   const updateUserApiKey = async (apiKey: string) => {
