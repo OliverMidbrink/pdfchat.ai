@@ -1,13 +1,62 @@
 import axios from 'axios';
 
+// Determine API URL based on environment
+const getApiUrl = () => {
+  // In production or environments with a defined API URL, use that
+  if (process.env.REACT_APP_API_URL) {
+    return process.env.REACT_APP_API_URL;
+  }
+  
+  // In development, use the current origin if it's not localhost:3000 (React dev server)
+  const origin = window.location.origin;
+  if (!origin.includes('localhost:3000')) {
+    return `${origin}/api`;
+  }
+  
+  // Default to localhost:8000 for local development
+  return 'http://localhost:8000/api';
+};
+
 // Base URL for API
-const API_URL = 'http://localhost:8000/api';
+export const API_URL = getApiUrl();
+
+// Maximum number of retries for network/timeout errors
+const MAX_RETRIES = 2;
 
 // Setup axios instance
 const api = axios.create({
   baseURL: API_URL,
-  timeout: 10000, // Set timeout to match other axios calls
+  timeout: 15000, // Increased timeout for better reliability
+  headers: {
+    'Content-Type': 'application/json',
+  }
 });
+
+// Retry mechanism for failed requests
+const retryRequest = async (
+  config: any, 
+  error: any, 
+  retryCount = 0
+) => {
+  // Don't retry if we've hit the max retry count or if this was a 4xx/5xx error (not a network error)
+  if (retryCount >= MAX_RETRIES || error.response) {
+    return Promise.reject(error);
+  }
+  
+  // Wait some time before retrying (exponential backoff)
+  const delay = Math.pow(2, retryCount) * 1000;
+  console.log(`Retrying request to ${config.url} after ${delay}ms (attempt ${retryCount + 1}/${MAX_RETRIES})`);
+  
+  await new Promise(resolve => setTimeout(resolve, delay));
+  
+  // Create a new request with the same config but increment the retry count
+  const newConfig = {
+    ...config,
+    _retryCount: retryCount + 1, 
+  };
+  
+  return api(newConfig);
+};
 
 // Add a request interceptor to inject the auth token for all requests
 api.interceptors.request.use(
@@ -51,6 +100,16 @@ api.interceptors.request.use(
           }
         }
       }
+      
+      // Special handling for document-related requests - add cache busting for PDFs
+      if (config.url?.includes('/documents/') && config.method === 'get') {
+        // Add timestamp to prevent caching issues with PDFs
+        const separator = config.url.includes('?') ? '&' : '?';
+        config.url = `${config.url}${separator}t=${Date.now()}`;
+        
+        // Increase timeout for document downloads
+        config.timeout = 30000;
+      }
     } catch (error) {
       console.error('Error setting auth token in request:', error);
     }
@@ -65,22 +124,37 @@ api.interceptors.request.use(
 // Handle response errors consistently
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
-    // Handle timeout or network errors
-    if (error.code === 'ECONNABORTED' || !error.response) {
-      console.error('API request timed out or network error:', error);
-      return Promise.reject({
-        ...error,
-        response: { data: { detail: 'Request timed out or network error.' } }
-      });
+  async (error) => {
+    const { config } = error;
+    
+    // If this wasn't due to a timeout or a network error, or we already retried, just reject
+    if ((error.code !== 'ECONNABORTED' && error.response) || config._retry) {
+      // Log other errors
+      if (error.response) {
+        console.error('API error response:', error.response.status, error.response.data);
+      }
+      return Promise.reject(error);
     }
     
-    // Log other errors
-    if (error.response) {
-      console.error('API error response:', error.response.status, error.response.data);
+    // For timeouts and network errors, attempt retry
+    const retryCount = config._retryCount || 0;
+    
+    // Special handling for document downloads to allow more retries
+    if (config.url?.includes('/documents/') && config.method === 'get') {
+      // Even if we've hit the max retries, try once more for documents with a longer timeout
+      if (retryCount === MAX_RETRIES) {
+        console.log('Final document download attempt with extended timeout');
+        const newConfig = {
+          ...config,
+          timeout: 45000, // Extended timeout for final document retry
+          _retry: true, // Mark as retried to avoid infinite loops
+        };
+        return api(newConfig);
+      }
     }
     
-    return Promise.reject(error);
+    // Attempt to retry the request
+    return retryRequest(config, error, retryCount);
   }
 );
 
@@ -121,6 +195,22 @@ const apiService = {
   // Chat
   sendMessage: (message: string, conversation_id: number | null = null) => 
     api.post('/chat', { message, conversation_id }),
+    
+  // Documents (with enhanced error handling)  
+  getDocuments: () => 
+    api.get('/documents'),
+    
+  getDocument: (id: number) => 
+    api.get(`/documents/${id}`),
+    
+  downloadDocument: (id: number) => 
+    api.get(`/documents/${id}/download`, { 
+      responseType: 'blob',
+      timeout: 30000 // Longer timeout for downloads
+    }),
+    
+  deleteDocument: (id: number) => 
+    api.delete(`/documents/${id}`),
 };
 
 export default apiService; 

@@ -8,12 +8,9 @@ import ChatInput from '../components/ChatInput';
 import Settings from '../components/Settings';
 import Resizer from '../components/Resizer';
 import { FiLogOut, FiFile, FiX, FiUpload, FiCheck, FiEdit2, FiPlus, FiFileText, FiTrash, FiUploadCloud, FiMessageSquare, FiChevronLeft, FiChevronRight, FiZoomIn, FiZoomOut } from 'react-icons/fi';
-import { Document, Page, pdfjs } from 'react-pdf';
-import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
-import 'react-pdf/dist/esm/Page/TextLayer.css';
-
-// Configure PDF.js worker with specific version
-pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js`;
+import documentService, { Document as DocumentType } from '../services/documentService';
+import { API_URL } from '../services/api';
+import Markdown from '../components/Markdown';
 
 interface Message {
   id: number;
@@ -26,8 +23,6 @@ interface Conversation {
   title: string;
   messages: Message[];
 }
-
-const API_URL = 'http://localhost:8000/api';
 
 const Chat: React.FC = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -55,13 +50,7 @@ const Chat: React.FC = () => {
   const [editedTitle, setEditedTitle] = useState('');
 
   // State for document management
-  const [documents, setDocuments] = useState<Array<{
-    id: string;
-    name: string;
-    size: number;
-    uploadDate: Date;
-    url?: string;
-  }>>([]);
+  const [documents, setDocuments] = useState<DocumentType[]>([]);
   const [isUploadingDocument, setIsUploadingDocument] = useState(false);
   const [documentError, setDocumentError] = useState<string | null>(null);
 
@@ -86,6 +75,12 @@ const Chat: React.FC = () => {
 
   // Add state for PDF.js initialization
   const [isPdfReady, setIsPdfReady] = useState(false);
+
+  // Add a new state for tracking document loading
+  const [isDocumentLoading, setIsDocumentLoading] = useState<boolean>(false);
+
+  // Add a state to track if we should use the fallback renderer
+  const [useBrowserFallback, setUseBrowserFallback] = useState(true);
 
   // Function to update sidebar state that will be passed to Sidebar component
   const handleSidebarToggle = (isOpen: boolean) => {
@@ -145,35 +140,10 @@ const Chat: React.FC = () => {
     }
   };
 
-  // Add helper function to ensure document URLs are properly formatted
-  const getDocumentUrl = (url?: string): string => {
-    if (!url) return '';
-    
-    // If the URL is already absolute (starts with http or https), return it as is
-    if (url.startsWith('http://') || url.startsWith('https://')) {
-      return url;
-    }
-    
-    // If it's a relative API path, ensure it has the full API_URL
-    if (url.startsWith('/api/')) {
-      return `http://localhost:8000${url}`;
-    }
-    
-    // Otherwise, prefix it with the API URL
-    return `${API_URL}${url.startsWith('/') ? '' : '/'}${url}`;
-  };
-
   const fetchDocuments = async () => {
     try {
-      const response = await axios.get(`${API_URL}/documents`);
-      const formattedDocuments = response.data.map((doc: any) => ({
-        id: doc.id,
-        name: doc.name,
-        size: doc.size,
-        uploadDate: new Date(doc.created_at),
-        url: getDocumentUrl(doc.url)
-      }));
-      setDocuments(formattedDocuments);
+      const docs = await documentService.fetchDocuments();
+      setDocuments(docs);
     } catch (error) {
       console.error('Error fetching documents:', error);
       setDocumentError('Failed to load documents');
@@ -224,13 +194,16 @@ const Chat: React.FC = () => {
       return;
     }
     
+    // We now send the original message with document references in [filename] format
+    // The backend will handle extracting and processing the document references
+    
     setIsLoading(true);
     setError(null);
     
     try {
-      // Send message to backend
+      // Send message to backend with original formatting (brackets preserved)
       const response = await axios.post(`${API_URL}/chat`, {
-        message: content,
+        message: content, // Use the original content with brackets
         conversation_id: activeConversation
       });
       
@@ -360,52 +333,21 @@ const Chat: React.FC = () => {
     
     const file = files[0];
     
-    // Check if file is a PDF
-    if (file.type !== 'application/pdf') {
-      setDocumentError('Only PDF files are supported');
-      return;
-    }
-    
-    // Check file size (max 10MB)
-    if (file.size > 10 * 1024 * 1024) {
-      setDocumentError('File size should not exceed 10MB');
-      return;
-    }
-    
     setIsUploadingDocument(true);
     setDocumentError(null);
     
     try {
-      // Create a FormData object to send the file
-      const formData = new FormData();
-      formData.append('file', file);
-      
-      // If we have an active conversation, associate the document with it
-      if (activeConversation) {
-        formData.append('conversation_id', activeConversation.toString());
-      }
-      
-      // Upload the file to the server
-      const response = await axios.post(`${API_URL}/documents/upload`, formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data'
-        }
-      });
-      
-      // Add the uploaded document to the state with properly formatted URL
-      const newDocument = {
-        id: response.data.id,
-        name: file.name,
-        size: file.size,
-        uploadDate: new Date(response.data.created_at),
-        url: getDocumentUrl(response.data.url)
-      };
+      // Use the document service to upload
+      const newDocument = await documentService.uploadDocument(
+        file, 
+        activeConversation
+      );
       
       setDocuments(prev => [newDocument, ...prev]);
       
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error uploading document:', error);
-      setDocumentError('Failed to upload document. Please try again.');
+      setDocumentError(error.message || 'Failed to upload document. Please try again.');
     } finally {
       setIsUploadingDocument(false);
       // Reset the file input
@@ -415,11 +357,10 @@ const Chat: React.FC = () => {
 
   const handleRemoveDocument = async (id: string) => {
     try {
-      // Call the API to delete the document
-      await axios.delete(`${API_URL}/documents/${id}`);
+      await documentService.deleteDocument(id);
       
       // Remove the document from state
-      setDocuments(prev => prev.filter(doc => doc.id !== id));
+      setDocuments(prev => prev.filter(doc => doc.id.toString() !== id));
       
       // If this was the selected document, clear the selection
       if (selectedDocument === id) {
@@ -430,9 +371,9 @@ const Chat: React.FC = () => {
       setShowDeleteConfirm(false);
       setDocumentToDelete(null);
       
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error removing document:', error);
-      setDocumentError('Failed to remove document. Please try again.');
+      setDocumentError(error.message || 'Failed to remove document. Please try again.');
       
       // Close confirmation dialog even on error
       setShowDeleteConfirm(false);
@@ -441,17 +382,54 @@ const Chat: React.FC = () => {
   };
 
   // Function to handle document selection with collapsing effect
-  const handleSelectDocument = (id: string) => {
-    if (selectedDocument === id) {
+  const handleSelectDocument = async (id: string | number) => {
+    const idString = id.toString();
+    
+    if (selectedDocument === idString) {
       // If clicking the same document, just toggle collapsed state
       setIsDocumentListCollapsed(!isDocumentListCollapsed);
     } else {
       // If selecting a different document, select it and ensure list is collapsed
-      setSelectedDocument(id);
-      setIsDocumentListCollapsed(true);
-      // Reset PDF state when switching documents
-      setPageNumber(1);
-      setNumPages(null);
+      try {
+        // Set loading state first
+        setIsDocumentLoading(true);
+        setSelectedDocument(idString);
+        setIsDocumentListCollapsed(true);
+        setPageNumber(1);
+        setNumPages(null);
+        
+        // Get the document from our documents array
+        const document = documents.find(doc => doc.id.toString() === idString);
+        
+        if (document) {
+          console.log(`Loading document ${idString} using direct download`);
+          
+          // Use direct download method to ensure proper authentication and loading
+          const blobUrl = await documentService.directDownloadDocument(idString);
+          
+          // Create an updated document object with the new blob URL
+          const updatedDoc = {
+            ...document,
+            url: blobUrl
+          };
+          
+          // Update the document in our state
+          setDocuments(prev => 
+            prev.map(doc => doc.id.toString() === idString ? updatedDoc : doc)
+          );
+        }
+        
+        // Clear loading state after a short delay to allow PDF to render
+        setTimeout(() => {
+          setIsDocumentLoading(false);
+          setDocumentError(null);
+        }, 300);
+        
+      } catch (error: any) {
+        console.error('Failed to load document:', error);
+        setDocumentError(error.message || 'Failed to load document. Please try again.');
+        setIsDocumentLoading(false);
+      }
     }
   };
 
@@ -461,16 +439,16 @@ const Chat: React.FC = () => {
   };
   
   // Get the currently selected document
-  const currentDocument = documents.find(doc => doc.id === selectedDocument);
+  const currentDocument = documents.find(doc => doc.id.toString() === selectedDocument);
 
-  const handleUseDocumentInChat = (id: string) => {
+  const handleUseDocumentInChat = (id: string | number) => {
     // Get the document from state
-    const document = documents.find(doc => doc.id === id);
+    const document = documents.find(doc => doc.id.toString() === id.toString());
     if (!document) return;
     
     // Append document reference to the current message
     setCurrentMessage(prev => 
-      `${prev ? prev + '\n\n' : ''}Using document: ${document.name}`
+      `${prev ? prev + '\n\n' : ''}[${document.name}]`
     );
     
     // Focus on the input after adding the document reference
@@ -484,9 +462,38 @@ const Chat: React.FC = () => {
     }
   };
 
-  const initiateDocumentDelete = (id: string, e: React.MouseEvent) => {
+  // Function to parse message for document references in [filename] format
+  const parseMessageForDocuments = (message: string): string => {
+    // Regular expression to match [filename] pattern
+    const regex = /\[(.*?)\]/g;
+    
+    let match;
+    let processedMessage = message;
+    
+    // Find all matches in the message
+    while ((match = regex.exec(message)) !== null) {
+      const documentName = match[1].trim();
+      // Find a document with this name or that includes this text
+      const matchedDocument = documents.find(doc => 
+        doc.name.toLowerCase() === documentName.toLowerCase() || 
+        doc.name.toLowerCase().includes(documentName.toLowerCase())
+      );
+      
+      if (matchedDocument) {
+        // If found, replace the original reference with our standard format
+        processedMessage = processedMessage.replace(
+          match[0], 
+          `Using document: ${matchedDocument.name}`
+        );
+      }
+    }
+    
+    return processedMessage;
+  };
+
+  const initiateDocumentDelete = (id: string | number, e: React.MouseEvent) => {
     e.stopPropagation();
-    setDocumentToDelete(id);
+    setDocumentToDelete(id.toString());
     setShowDeleteConfirm(true);
   };
   
@@ -495,10 +502,64 @@ const Chat: React.FC = () => {
     setDocumentToDelete(null);
   };
 
-  // PDF viewer handlers
+  // Add a debug function to inspect PDF loading issues
+  const debugPdfLoading = (url: string) => {
+    console.log('Attempting to debug PDF loading issues');
+    console.log(`PDF URL: ${url}`);
+    
+    // Check if URL is a blob URL
+    if (url.startsWith('blob:')) {
+      console.log('URL is a blob URL - this is good for PDF.js');
+      
+      // Try to fetch the blob to verify it works
+      fetch(url)
+        .then(response => {
+          console.log(`Debug fetch status: ${response.status}`);
+          return response.blob();
+        })
+        .then(blob => {
+          console.log(`Debug blob size: ${blob.size} bytes`);
+          console.log(`Debug blob type: ${blob.type}`);
+          
+          // Create a temporary download link for diagnostic purposes
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = 'debug-document.pdf';
+          link.style.display = 'none';
+          document.body.appendChild(link);
+          console.log('Created debug download link - check if file can be downloaded directly');
+        })
+        .catch(err => {
+          console.error('Error in debug fetch:', err);
+        });
+    } else {
+      console.warn('URL is not a blob URL - this might cause CORS issues with PDF.js');
+    }
+  };
+
+  // PDF viewer handlers with improved error handling
   const onDocumentLoadSuccess = ({ numPages }: { numPages: number }) => {
+    console.log(`PDF loaded successfully with ${numPages} pages`);
     setNumPages(numPages);
     setPageNumber(1);
+    
+    // Clear any error messages
+    setDocumentError(null);
+  };
+
+  const onDocumentLoadError = (error: any) => {
+    console.error('Error loading PDF document:', error);
+    const errorMessage = error.message || (typeof error === 'string' ? error : 'Unknown error');
+    setDocumentError(`Failed to load PDF: ${errorMessage}`);
+    
+    // Always use browser fallback
+    setUseBrowserFallback(true);
+
+    return (
+      <div className="flex items-center justify-center h-full text-center p-5">
+        <div className="text-red-500">Failed to load PDF. Please try again.</div>
+      </div>
+    );
   };
   
   const changePage = (offset: number) => {
@@ -515,36 +576,95 @@ const Chat: React.FC = () => {
   const zoomIn = () => setScale(prevScale => Math.min(prevScale + 0.2, 2.5));
   const zoomOut = () => setScale(prevScale => Math.max(prevScale - 0.2, 0.5));
 
-  // Updated useEffect for PDF.js initialization
-  useEffect(() => {
-    // Initialize PDF.js worker with multiple fallbacks
-    const initPdfWorker = async () => {
-      try {
-        // Use specific version instead of dynamic version
-        const workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js`;
-        
-        // Set the worker source
-        console.log(`Setting PDF.js worker to: ${workerSrc}`);
-        pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
-        
-        // Mark PDF.js as ready
-        setIsPdfReady(true);
-      } catch (error) {
-        console.error("Error initializing PDF.js worker:", error);
-        // Fallback to unpkg if CDN fails
-        try {
-          // Use specific version for fallback
-          const fallbackSrc = `https://unpkg.com/pdfjs-dist@3.4.120/build/pdf.worker.min.js`;
-          pdfjs.GlobalWorkerOptions.workerSrc = fallbackSrc;
-          console.log(`Using fallback PDF.js worker: ${fallbackSrc}`);
-          setIsPdfReady(true);
-        } catch (fallbackError) {
-          console.error("Error initializing fallback PDF.js worker:", fallbackError);
-        }
+  // Function to retry loading a document
+  const retryLoadDocument = async (documentId: string | number) => {
+    if (!documentId) return;
+    
+    const idString = documentId.toString();
+    setDocumentError('Loading document...');
+    setIsDocumentLoading(true);
+    
+    try {
+      console.log(`Retrying document download for ID: ${idString}`);
+      
+      // Get the document from our documents array
+      const document = documents.find(doc => doc.id.toString() === idString);
+      
+      if (!document) {
+        throw new Error('Document not found in state');
       }
-    };
+      
+      // Use our direct download function that properly handles authentication
+      const blobUrl = await documentService.directDownloadDocument(idString);
+      
+      // Create an updated document with the new blob URL
+      const updatedDoc = {
+        ...document,
+        url: blobUrl
+      };
+      
+      // Update document in state
+      setDocuments(prev => 
+        prev.map(doc => doc.id.toString() === idString ? updatedDoc : doc)
+      );
+      
+      // Clear any error message after a delay
+      setTimeout(() => {
+        setDocumentError(null);
+        setIsDocumentLoading(false);
+      }, 300);
+      
+      console.log('Document successfully reloaded with direct method');
+    } catch (error: any) {
+      console.error('Failed to download document:', error);
+      setDocumentError(error.message || 'Failed to download document. Please try again.');
+      setIsDocumentLoading(false);
+    }
+  };
 
-    initPdfWorker();
+  // Fallback PDF renderer component
+  const FallbackPDFRenderer = ({ url }: { url: string }) => {
+    return (
+      <div className="flex flex-col h-full w-full">
+        <div className="bg-yellow-50 dark:bg-yellow-900/20 p-2 text-sm text-yellow-700 dark:text-yellow-400 text-center mb-2 rounded">
+          Using fallback PDF renderer. Some features may be limited.
+        </div>
+        <div className="flex-1 relative">
+          <iframe 
+            src={url} 
+            className="absolute inset-0 w-full h-full border-0 rounded"
+            title="PDF Viewer"
+          />
+        </div>
+      </div>
+    );
+  };
+
+  // Add useEffect to clear PDF worker cache on load
+  useEffect(() => {
+    // Force cache clearing by adding this meta tag
+    const meta = document.createElement('meta');
+    meta.httpEquiv = 'Cache-Control';
+    meta.content = 'no-cache, no-store, must-revalidate';
+    document.head.appendChild(meta);
+    
+    // Clear any existing cached PDF workers from memory
+    if (window.caches) {
+      // Try to clear cache storage if available
+      window.caches.keys().then(cacheNames => {
+        cacheNames.forEach(cacheName => {
+          if (cacheName.includes('pdf') || cacheName.includes('worker')) {
+            console.log(`Clearing cache: ${cacheName}`);
+            window.caches.delete(cacheName);
+          }
+        });
+      }).catch(err => console.error('Failed to clear caches:', err));
+    }
+    
+    return () => {
+      // Remove the meta tag on cleanup
+      document.head.removeChild(meta);
+    };
   }, []);
 
   return (
@@ -646,7 +766,7 @@ const Chat: React.FC = () => {
                   
                   {/* Document list and preview flex container */}
                   {!documentError && !isUploadingDocument && (
-                    <div className="flex flex-1 h-full">
+                    <div className="flex flex-1 h-full max-w-full">
                       {/* Document list - collapsible sidebar */}
                       <div className={`h-full border-r border-gray-200 dark:border-gray-800 transition-all duration-300 ease-in-out ${
                         isDocumentListCollapsed ? 'w-16' : 'w-64'
@@ -765,143 +885,113 @@ const Chat: React.FC = () => {
 
                       {/* Document preview panel */}
                       {selectedDocument ? (
-                        <div className="flex-1 flex flex-col h-full p-3">
-                          {/* Document preview header */}
-                          <div className="flex items-center justify-between mb-3">
-                            <h2 className="text-lg font-medium text-gray-800 dark:text-gray-200 truncate">
-                              {currentDocument?.name}
-                            </h2>
-                            <div className="flex items-center space-x-2">
-                              <button
-                                onClick={() => handleUseDocumentInChat(selectedDocument)}
-                                className="px-3 py-1.5 bg-black text-white dark:bg-white dark:text-black rounded-md text-sm font-medium flex items-center"
-                              >
-                                <FiMessageSquare className="mr-1.5" size={14} />
-                                Use in Chat
-                              </button>
+                        <div className="flex-1 flex flex-col h-full min-w-0 overflow-hidden">
+                          {/* Document preview header with fixed height */}
+                          <div className="flex-shrink-0 px-4 py-3 border-b border-gray-200 dark:border-gray-800">
+                            <div className="flex items-center w-full">
+                              <div className="flex-1 min-w-0 mr-3 overflow-hidden relative">
+                                <h2 className="text-lg font-medium text-gray-800 dark:text-gray-200 truncate pr-6">
+                                  {currentDocument?.name}
+                                </h2>
+                                {/* Gradient fade effect */}
+                                <div className="absolute right-0 top-0 h-full w-12 bg-gradient-to-r from-transparent to-white dark:to-black"></div>
+                              </div>
+                              <div className="flex-shrink-0">
+                                <button
+                                  onClick={() => handleUseDocumentInChat(selectedDocument)}
+                                  className="px-3 py-1.5 bg-black text-white dark:bg-white dark:text-black rounded-md text-sm font-medium flex items-center justify-center w-28"
+                                >
+                                  <FiMessageSquare className="mr-1.5 flex-shrink-0" size={14} />
+                                  <span className="whitespace-nowrap">Use in Chat</span>
+                                </button>
+                              </div>
                             </div>
                           </div>
                           
-                          {/* PDF Viewer */}
-                          <div className="flex-1 border border-gray-200 dark:border-gray-800 rounded-lg overflow-hidden bg-gray-100 dark:bg-gray-900 flex flex-col">
-                            {currentDocument?.url ? (
-                              <>
-                                {/* Toolbar */}
-                                <div className="flex justify-between items-center p-2 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-850">
-                                  <div className="flex items-center space-x-2">
-                                    <button
-                                      onClick={previousPage}
-                                      disabled={pageNumber <= 1}
-                                      className={`p-1 rounded ${pageNumber <= 1 ? 'text-gray-300 dark:text-gray-600' : 'text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'}`}
-                                      aria-label="Previous page"
-                                    >
-                                      ←
-                                    </button>
-                                    <span className="text-sm">
-                                      Page {pageNumber} of {numPages || '...'}
-                                    </span>
-                                    <button
-                                      onClick={nextPage}
-                                      disabled={numPages !== null && pageNumber >= numPages}
-                                      className={`p-1 rounded ${numPages !== null && pageNumber >= numPages ? 'text-gray-300 dark:text-gray-600' : 'text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800'}`}
-                                      aria-label="Next page"
-                                    >
-                                      →
-                                    </button>
+                          {/* PDF Viewer - takes remaining height */}
+                          <div className="flex-1 overflow-auto flex justify-center relative p-4">
+                            {/* Skeleton loading overlay */}
+                            {isDocumentLoading && (
+                              <div className="absolute inset-0 bg-gray-100 dark:bg-gray-900 z-10 overflow-hidden">
+                                <div className="animate-pulse flex flex-col items-center pt-10">
+                                  {/* Header skeleton */}
+                                  <div className="h-4 bg-gray-300 dark:bg-gray-700 rounded w-3/4 max-w-md mb-3"></div>
+                                  <div className="h-3 bg-gray-300 dark:bg-gray-700 rounded w-1/2 max-w-sm mb-8"></div>
+                                  
+                                  {/* Page content skeleton */}
+                                  <div className="bg-white dark:bg-gray-800 rounded shadow-sm h-[60vh] max-h-[800px] w-[calc(0.7*60vh)] max-w-md relative overflow-hidden">
+                                    {/* Header */}
+                                    <div className="h-6 bg-gray-200 dark:bg-gray-700 rounded-t w-full"></div>
+                                    
+                                    {/* Content lines */}
+                                    <div className="p-4 space-y-3">
+                                      <div className="h-3 bg-gray-300 dark:bg-gray-600 rounded w-full"></div>
+                                      <div className="h-3 bg-gray-300 dark:bg-gray-600 rounded w-5/6"></div>
+                                      <div className="h-3 bg-gray-300 dark:bg-gray-600 rounded w-4/6"></div>
+                                      <div className="h-3 bg-gray-300 dark:bg-gray-600 rounded w-full"></div>
+                                      <div className="h-3 bg-gray-300 dark:bg-gray-600 rounded w-3/4"></div>
+                                      <div className="h-3 bg-gray-300 dark:bg-gray-600 rounded w-full"></div>
+                                      <div className="h-3 bg-gray-300 dark:bg-gray-600 rounded w-5/6"></div>
+                                      <div className="h-3 bg-gray-300 dark:bg-gray-600 rounded w-4/6"></div>
+                                      
+                                      {/* Shimmer effect overlay */}
+                                      <div className="absolute inset-0 w-full h-full">
+                                        <div className="shimmer-effect"></div>
+                                      </div>
+                                    </div>
                                   </div>
-                                  <div className="flex items-center space-x-2">
-                                    <button
-                                      onClick={zoomOut}
-                                      className="p-1.5 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
-                                      aria-label="Zoom out"
+                                </div>
+                              </div>
+                            )}
+                            
+                            {/* Show error message if there was an error loading the PDF */}
+                            {documentError && !isDocumentLoading && (
+                              <div className="flex items-center justify-center h-full text-center">
+                                <div>
+                                  <div className="text-red-500 mb-2 font-medium">Failed to load PDF</div>
+                                  <p className="text-sm text-gray-500 mb-4">{documentError}</p>
+                                  <div className="flex flex-col gap-2">
+                                    <button 
+                                      onClick={() => {
+                                        if (currentDocument) {
+                                          debugPdfLoading(currentDocument.url);
+                                          retryLoadDocument(currentDocument.id);
+                                        }
+                                      }}
+                                      className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md text-sm font-medium mb-2"
                                     >
-                                      <FiZoomOut size={14} />
+                                      Retry loading
                                     </button>
-                                    <span className="text-sm">{Math.round(scale * 100)}%</span>
-                                    <button
-                                      onClick={zoomIn}
-                                      className="p-1.5 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
-                                      aria-label="Zoom in"
+                                    <button 
+                                      onClick={() => currentDocument && window.open(currentDocument.url, '_blank')}
+                                      className="px-3 py-2 bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 rounded-md text-sm font-medium"
                                     >
-                                      <FiZoomIn size={14} />
+                                      Open in browser
                                     </button>
-                                    <a
-                                      href={currentDocument.url}
+                                    <a 
+                                      href={currentDocument?.url || '#'}
                                       download
                                       target="_blank"
                                       rel="noopener noreferrer"
-                                      className="ml-2 p-1.5 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
-                                      aria-label="Download PDF"
+                                      className="px-3 py-2 bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 rounded-md text-sm font-medium text-center"
                                     >
-                                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                                      </svg>
+                                      Download PDF
                                     </a>
                                   </div>
                                 </div>
-                                <div className="flex-1 overflow-auto flex justify-center p-4">
-                                  {/* PDF Document with initialization check */}
-                                  {isPdfReady && currentDocument && currentDocument.url ? (
-                                    <Document
-                                      file={currentDocument.url}
-                                      onLoadSuccess={onDocumentLoadSuccess}
-                                      loading={
-                                        <div className="flex items-center justify-center h-full">
-                                          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-700"></div>
-                                        </div>
-                                      }
-                                      error={
-                                        <div className="flex items-center justify-center h-full text-center">
-                                          <div>
-                                            <p className="text-red-500 mb-2">Failed to load PDF</p>
-                                            <p className="text-sm text-gray-500 mb-4">Please try the options below</p>
-                                            <div className="flex flex-col gap-2">
-                                              <button 
-                                                onClick={() => window.open(currentDocument.url, '_blank')}
-                                                className="px-3 py-2 bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 rounded-md text-sm font-medium"
-                                              >
-                                                Open in browser
-                                              </button>
-                                              <a 
-                                                href={currentDocument.url}
-                                                download
-                                                target="_blank"
-                                                rel="noopener noreferrer"
-                                                className="px-3 py-2 bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 rounded-md text-sm font-medium text-center"
-                                              >
-                                                Download PDF
-                                              </a>
-                                            </div>
-                                          </div>
-                                        </div>
-                                      }
-                                    >
-                                      <Page 
-                                        pageNumber={pageNumber}
-                                        scale={scale}
-                                      />
-                                    </Document>
-                                  ) : (
-                                    <div className="flex items-center justify-center h-full">
-                                      <div className="text-center">
-                                        {isPdfReady ? (
-                                          <p className="text-gray-600 dark:text-gray-400">
-                                            {currentDocument ? 'PDF source not available' : 'Select a document to view'}
-                                          </p>
-                                        ) : (
-                                          <>
-                                            <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-gray-700 mb-3 mx-auto"></div>
-                                            <p className="text-gray-600 dark:text-gray-400">Loading PDF viewer...</p>
-                                          </>
-                                        )}
-                                      </div>
-                                    </div>
-                                  )}
+                              </div>
+                            )}
+                            
+                            {/* PDF Viewer */}
+                            {!isDocumentLoading && !documentError && currentDocument?.url && (
+                              <div className="w-full h-full flex flex-col">
+                                <div className="flex-1 relative">
+                                  <iframe 
+                                    src={currentDocument.url}
+                                    className="absolute inset-0 w-full h-full border-0 rounded bg-white"
+                                    title="PDF Viewer"
+                                  />
                                 </div>
-                              </>
-                            ) : (
-                              <div className="flex items-center justify-center h-full">
-                                <p className="text-gray-500 dark:text-gray-400">PDF source not available</p>
                               </div>
                             )}
                           </div>
@@ -1063,6 +1153,7 @@ const Chat: React.FC = () => {
             value={currentMessage}
             onChange={(e) => setCurrentMessage(e.target.value)}
             inputRef={inputRef}
+            documents={documents}
           />
         </div>
       </div>

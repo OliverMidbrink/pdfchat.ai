@@ -1,6 +1,7 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 import { FiUser, FiZap } from 'react-icons/fi';
+import Markdown from './Markdown';
 
 interface ChatMessageProps {
   content: string;
@@ -27,10 +28,8 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ content, isUser }) => {
           <div className="text-sm font-medium mb-1">
             {isUser ? 'You' : 'AI Assistant'}
           </div>
-          <div className="prose prose-gray dark:prose-invert prose-pre:bg-gray-100 dark:prose-pre:bg-gray-800 prose-pre:text-sm max-w-none">
-            {content.split('\n').map((paragraph, index) => (
-              <p key={index}>{paragraph}</p>
-            ))}
+          <div className="prose prose-gray dark:prose-invert max-w-none">
+            <Markdown content={content} />
           </div>
         </div>
       </div>

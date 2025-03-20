@@ -3,15 +3,19 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 import os
 from fastapi.responses import FileResponse
+import logging
+import urllib.parse
 
 from app.db.session import get_db
 from app.core.security import get_current_active_user
 from app.models.user import User
 from app.models.document import Document
 from app.schemas.document import DocumentResponse, DocumentUpdate
-from app.utils.file_handler import save_upload_file, get_file_url, delete_file
+from app.utils.file_handler import save_upload_file, get_file_url, delete_file, verify_file_exists
 
 router = APIRouter(tags=["documents"])
+
+logger = logging.getLogger(__name__)
 
 @router.post("/documents/upload", response_model=DocumentResponse)
 async def upload_document(
@@ -120,30 +124,63 @@ async def download_document(
     """
     Download a document
     """
-    document = db.query(Document).filter(
-        Document.id == document_id,
-        Document.user_id == current_user.id
-    ).first()
+    # Log the document download request
+    logger.info(f"Document download request for ID {document_id} by user {current_user.id}")
     
-    if not document:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Document not found"
+    try:
+        # Get the document from the database
+        document = db.query(Document).filter(
+            Document.id == document_id,
+            Document.user_id == current_user.id
+        ).first()
+        
+        if not document:
+            logger.warning(f"Document not found: ID {document_id} for user {current_user.id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Document not found"
+            )
+        
+        file_path = document.path
+        
+        # Use the utility function to verify the file exists
+        if not verify_file_exists(file_path):
+            logger.error(f"File not found on server: {file_path}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="File not found on server"
+            )
+        
+        # Handle special characters in filename by using proper encoding
+        # URL-encode the filename to make it safe for headers
+        safe_filename = urllib.parse.quote(document.name)
+        
+        # Set appropriate headers for PDF content
+        headers = {
+            "Content-Disposition": f'inline; filename="{safe_filename}"',
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "no-cache, no-store, must-revalidate",  # Prevent caching
+            "Pragma": "no-cache",
+            "Expires": "0"
+        }
+        
+        # Return the file response
+        return FileResponse(
+            path=file_path,
+            filename=safe_filename,
+            media_type=document.content_type,
+            headers=headers
         )
-    
-    file_path = document.path
-    
-    if not os.path.exists(file_path):
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        # Log unexpected errors
+        logger.error(f"Error while serving document {document_id}: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="File not found on server"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while retrieving the document"
         )
-    
-    return FileResponse(
-        path=file_path,
-        filename=document.name,
-        media_type=document.content_type
-    )
 
 @router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_document(
