@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { FiFile, FiCheckSquare, FiSquare, FiChevronDown, FiChevronUp, FiSearch, FiX } from 'react-icons/fi';
+import { FiFile, FiCheckSquare, FiSquare, FiChevronDown, FiChevronUp, FiSearch, FiX, FiPlusCircle } from 'react-icons/fi';
+import { BsPin, BsPinFill } from 'react-icons/bs';
 
 interface Document {
   id: string | number;
@@ -12,12 +13,16 @@ interface DocumentSelectorProps {
   documents: Document[];
   onInsertReferences: (documentNames: string[]) => void;
   className?: string;
+  pinnedDocIds?: Set<string | number>;  // New prop for pinned documents
+  onTogglePinned?: (docId: string | number) => void;  // New callback for toggling pinned status
 }
 
 const DocumentSelector: React.FC<DocumentSelectorProps> = ({ 
   documents,
   onInsertReferences,
-  className = ''
+  className = '',
+  pinnedDocIds = new Set<string | number>(),
+  onTogglePinned
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [selectedDocs, setSelectedDocs] = useState<Set<string | number>>(new Set());
@@ -66,6 +71,14 @@ const DocumentSelector: React.FC<DocumentSelectorProps> = ({
       newSelection.add(docId);
     }
     setSelectedDocs(newSelection);
+  };
+  
+  // Toggle pinned status of a document
+  const togglePinned = (docId: string | number, event: React.MouseEvent) => {
+    event.stopPropagation();
+    if (onTogglePinned) {
+      onTogglePinned(docId);
+    }
   };
   
   // Toggle all filtered documents
@@ -137,22 +150,35 @@ const DocumentSelector: React.FC<DocumentSelectorProps> = ({
     selectedDocs.has(doc.id)
   ).length;
   
+  // Count of total pinned documents
+  const pinnedCount = pinnedDocIds.size;
+  
   return (
     <div 
       ref={containerRef}
       className={`relative ${className}`}
     >
-      <button
-        type="button"
-        onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center space-x-1 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 px-2 py-1 rounded border border-gray-300 dark:border-gray-700"
-        disabled={documents.length === 0}
-        title={documents.length === 0 ? "No documents available" : "Select documents to reference"}
-      >
-        <FiFile size={14} />
-        <span className="text-sm">Add Document{selectedDocs.size > 0 ? ` (${selectedDocs.size})` : ''}</span>
-        {isOpen ? <FiChevronUp size={14} /> : <FiChevronDown size={14} />}
-      </button>
+      <div className="flex items-center gap-2">
+        {/* Display mini-badge if documents are pinned */}
+        {pinnedCount > 0 && (
+          <div className="flex items-center gap-1 text-xs bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 px-2 py-0.5 rounded-full">
+            <BsPinFill size={12} className="text-blue-500" />
+            <span>{pinnedCount} Pinned</span>
+          </div>
+        )}
+        
+        <button
+          type="button"
+          onClick={() => setIsOpen(!isOpen)}
+          className="flex items-center space-x-1 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 px-2 py-1 rounded border border-gray-300 dark:border-gray-700"
+          disabled={documents.length === 0}
+          title={documents.length === 0 ? "No documents available" : "Select documents to reference"}
+        >
+          <FiFile size={14} />
+          <span className="text-sm">Add Document{selectedDocs.size > 0 ? ` (${selectedDocs.size})` : ''}</span>
+          {isOpen ? <FiChevronUp size={14} /> : <FiChevronDown size={14} />}
+        </button>
+      </div>
       
       {isOpen && documents.length > 0 && (
         <div className="absolute left-0 bottom-full mb-1 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-md shadow-lg z-10 w-72">
@@ -218,9 +244,19 @@ const DocumentSelector: React.FC<DocumentSelectorProps> = ({
                         )}
                       </div>
                       {/* Limited width for document name with ellipsis */}
-                      <span className="text-sm text-gray-800 dark:text-gray-200 truncate max-w-[220px] flex-1">
+                      <span className="text-sm text-gray-800 dark:text-gray-200 truncate max-w-[180px] flex-1">
                         {doc.name}
                       </span>
+                      {/* Pin button */}
+                      {onTogglePinned && (
+                        <button
+                          onClick={(e) => togglePinned(doc.id, e)}
+                          className={`w-5 h-5 flex-shrink-0 flex items-center justify-center ${pinnedDocIds.has(doc.id) ? 'text-blue-500' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'}`}
+                          title={pinnedDocIds.has(doc.id) ? "Unpin document" : "Pin document to all messages"}
+                        >
+                          {pinnedDocIds.has(doc.id) ? <BsPinFill size={14} /> : <BsPin size={14} />}
+                        </button>
+                      )}
                     </div>
                   </li>
                 ))}
@@ -232,9 +268,9 @@ const DocumentSelector: React.FC<DocumentSelectorProps> = ({
             )}
           </div>
           
-          {/* Action button */}
-          {selectedDocs.size > 0 && (
-            <div className="p-2 border-t border-gray-200 dark:border-gray-700">
+          {/* Document actions */}
+          <div className="p-2 border-t border-gray-200 dark:border-gray-700">
+            {selectedDocs.size > 0 && (
               <button
                 type="button"
                 onClick={insertReferences}
@@ -242,8 +278,16 @@ const DocumentSelector: React.FC<DocumentSelectorProps> = ({
               >
                 Add {selectedDocs.size} {selectedDocs.size === 1 ? 'Document' : 'Documents'} to Chat
               </button>
-            </div>
-          )}
+            )}
+            
+            {/* Show info about pinned documents */}
+            {pinnedCount > 0 && (
+              <div className="mt-2 text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1">
+                <BsPin size={12} />
+                <span>{pinnedCount} document{pinnedCount > 1 ? 's' : ''} pinned to all messages</span>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

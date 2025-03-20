@@ -68,6 +68,21 @@ const Chat: React.FC = () => {
   // Add state for document list collapsed mode
   const [isDocumentListCollapsed, setIsDocumentListCollapsed] = useState(false);
 
+  // Add state for pinned documents
+  const [pinnedDocuments, setPinnedDocuments] = useState<Set<string | number>>(() => {
+    // Try to load pinned documents from localStorage
+    try {
+      const savedPinned = localStorage.getItem('pinnedDocuments');
+      if (savedPinned) {
+        // Convert from array to Set
+        return new Set(JSON.parse(savedPinned));
+      }
+    } catch (e) {
+      console.error('Error loading pinned documents from localStorage:', e);
+    }
+    return new Set();
+  });
+
   // Add state for PDF viewer
   const [numPages, setNumPages] = useState<number | null>(null);
   const [pageNumber, setPageNumber] = useState(1);
@@ -194,16 +209,43 @@ const Chat: React.FC = () => {
       return;
     }
     
-    // We now send the original message with document references in [filename] format
-    // The backend will handle extracting and processing the document references
+    // If we have pinned documents, add them to the message
+    let messageWithPinned = content;
+    
+    if (pinnedDocuments.size > 0) {
+      // Get the names of all pinned documents
+      const pinnedDocNames = documents
+        .filter(doc => pinnedDocuments.has(doc.id))
+        .map(doc => `[${doc.name}]`);
+      
+      // Add pinned documents to the message if they're not already referenced
+      if (pinnedDocNames.length > 0) {
+        const pinnedReferences = pinnedDocNames.join(' ');
+        
+        // Only add pinned documents if they're not already in the message
+        const hasAllPinnedDocs = pinnedDocNames.every(docRef => 
+          content.includes(docRef)
+        );
+        
+        if (!hasAllPinnedDocs) {
+          if (content.trim()) {
+            // Add a line break if there's existing content
+            messageWithPinned = `${content}\n\n${pinnedReferences}`;
+          } else {
+            // Just use the references if there's no content
+            messageWithPinned = pinnedReferences;
+          }
+        }
+      }
+    }
     
     setIsLoading(true);
     setError(null);
     
     try {
-      // Send message to backend with original formatting (brackets preserved)
+      // Send message to backend with original formatting (brackets preserved) and pinned documents
       const response = await axios.post(`${API_URL}/chat`, {
-        message: content, // Use the original content with brackets
+        message: messageWithPinned, // Use the content with pinned documents added
         conversation_id: activeConversation
       });
       
@@ -666,6 +708,27 @@ const Chat: React.FC = () => {
       document.head.removeChild(meta);
     };
   }, []);
+
+  // Add handler for toggling pinned status
+  const togglePinnedDocument = (docId: string | number) => {
+    setPinnedDocuments(prev => {
+      const newPinned = new Set(prev);
+      if (newPinned.has(docId)) {
+        newPinned.delete(docId);
+      } else {
+        newPinned.add(docId);
+      }
+      
+      // Save to localStorage
+      try {
+        localStorage.setItem('pinnedDocuments', JSON.stringify(Array.from(newPinned)));
+      } catch (e) {
+        console.error('Error saving pinned documents to localStorage:', e);
+      }
+      
+      return newPinned;
+    });
+  };
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -1154,6 +1217,8 @@ const Chat: React.FC = () => {
             onChange={(e) => setCurrentMessage(e.target.value)}
             inputRef={inputRef}
             documents={documents}
+            pinnedDocIds={pinnedDocuments}
+            onTogglePinned={togglePinnedDocument}
           />
         </div>
       </div>

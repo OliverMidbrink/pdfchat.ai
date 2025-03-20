@@ -12,6 +12,8 @@ interface ChatInputProps {
   onChange?: (e: React.ChangeEvent<HTMLTextAreaElement>) => void;
   inputRef?: FlexibleTextAreaRef;
   documents?: Array<{id: string | number, name: string}>;
+  pinnedDocIds?: Set<string | number>;
+  onTogglePinned?: (docId: string | number) => void;
 }
 
 const ChatInput: React.FC<ChatInputProps> = ({ 
@@ -20,7 +22,9 @@ const ChatInput: React.FC<ChatInputProps> = ({
   value,
   onChange,
   inputRef,
-  documents = []
+  documents = [],
+  pinnedDocIds,
+  onTogglePinned
 }) => {
   const [message, setMessage] = useState('');
   const defaultTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -118,6 +122,8 @@ const ChatInput: React.FC<ChatInputProps> = ({
           <DocumentSelector 
             documents={documents}
             onInsertReferences={insertMultipleDocumentReferences}
+            pinnedDocIds={pinnedDocIds}
+            onTogglePinned={onTogglePinned}
           />
         </div>
         
